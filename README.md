@@ -1,16 +1,26 @@
 # Reasoning-Preserve
 
-Keep a local llama.cpp model's thinking across turns.
+Keep a local model's thinking across turns!
 
-When Hermes trims the context window to fit the model, it strips the
-`reasoning_content` field that llama.cpp returns. The model's scratchpad is
-wiped. The next turn starts with the model having no memory of what it was
-just working through. For reasoning models, that means re-deriving from
-scratch every turn instead of building on what it already worked out.
+While Hermes supports retaining thinking content for a limited number of providers (Deepseek, Kimi, MiMo), this feature has yet to come to local/custom providers and the wider model ecosystem.
+Documented here: https://github.com/NousResearch/hermes-agent/issues/56004
 
-This plugin puts the scratchpad back.
+### The Problem
 
-## How it works
+When Hermes trims the context window to fit a local model, it strips the
+`reasoning_content` field that the local inference backend returns. This means that
+each turn, Hermes remembers what it *said* to you in the previous turns, but not what it
+*thought* about. Each turn may as well be a new Agent who read the message history.
+
+Regardless of whether it gives a correct or incorrect answer, your agent is unable to tell you
+how it arrived at its conclusion to the problem *you just gave it*.
+
+### The Solution!
+
+This plugin reinjects the thinking content of the previous turn into the next, so that your Hermes sessions
+come closer to an ongoing conversation with a real agent, and less of playing telephone with someone new every single message.
+
+## How It Works:
 
 Think of `reasoning_content` as a notebook the model writes in while it is
 thinking. Hermes' context trimmer wipes that notebook between turns. The
@@ -21,33 +31,62 @@ Concretely, the plugin registers a `pre_api_request` hook. Before each request
 leaves Hermes, it checks two things:
 
 1. Is the backend a `custom` provider? If not, the hook does nothing. Strict
-   OpenAI-style servers reject unknown fields, and this plugin will not fight
-   that fight.
+   OpenAI-style servers reject unknown fields anyway.
 2. Is there a `reasoning_content` field in the payload? If not, the hook does
    nothing. There is nothing to put back.
 
 If both are yes, the hook attaches the field to the last message in the
-request. The chat template on the llama.cpp side reads it and feeds it back to
+request. The chat template on the inference server's side reads it and feeds it back to
 the model as context.
 
-Before (what Hermes sends without the plugin):
+### Before:
 
-```json
-{"messages": [{"role": "user", "content": "what's 5 + 3?"}]}
-```
+> User: Generate two random 4-digit numbers, then output *only* the result
+>
+> Hermes: \<think\> *Number 1: 6,234. Number 2: 8,917. 6234 + 8917 = 15151* \</think\> \
+> Hermes: **15151**
+>
+> User: Now tell me what two numbers you added to get 15151.
+>
+> Hermes: \<think\> *The numbers I added were 8,000 + 7,515. Wait, I actually can't remember what the numbers were. Wait, I never actually generated two numbers. I should be honest and tell the user that I just made a number up...*
 
-After (what llama.cpp receives with the plugin):
+The model has no idea what two numbers it added together, even if its thinking block is visible to you in Hermes' UI.
+If you ask Hermes in the next turn what the two numbers were, it will either hallucinate, tell you it can't remember, or conclude that it never generated two numbers in the first place.
+
+What Hermes sends without the plugin:
 
 ```json
 {"messages": [
-  {"role": "user", "content": "what's 5 + 3?"},
+  {"role": "user", "content": "Generate two random 4-digit numbers, then output *only* the result"},
   {"role": "assistant",
-   "reasoning_content": "5 + 3... that's 8",
-   "content": "8"}
+   "content": "15151"}
 ]}
 ```
 
+### After: 
+
+> User: Generate two random 4-digit numbers, then output *only* the result
+>
+> Hermes: \<think\> *Number 1: 6,234. Number 2: 8,917. 6234 + 8917 = 15151* \</think\> \
+> Hermes: **15151**
+>
+> User: Now tell me what two numbers you added to get 15151.
+>
+> Hermes: \<think\> *I can see that I added 6,234 and 8,917. \</think\> \
+> Hermes: I added 6,234 and 8,917. **6,234 + 8,917 = 15151**.
+
 The model sees its own prior reasoning. It continues from there.
+
+What llama.cpp receives with the plugin:
+
+```json
+{"messages": [
+  {"role": "user", "content": "generate two random 4-digit numbers, then output *only* the result"},
+  {"role": "assistant",
+   "reasoning_content": "Number 1: 6,234. Number 2: 8,917. 6234 + 8917 = 15151",
+   "content": "15151"}
+]}
+```
 
 ## Install
 
@@ -55,33 +94,26 @@ The model sees its own prior reasoning. It continues from there.
 hermes plugins install NeatOnTheRocks/hermes-reasoning-preserve-plugin --enable
 ```
 
-That is the whole install. No config file to edit. No flag to set. The plugin
+That is the whole install. No config file to edit or flag to set or any of that. The plugin
 is self-scoping: it checks the backend type before acting, so it never touches
 a strict server and never injects a field a backend would reject.
 
-One prerequisite: your llama.cpp chat template must read
+Two prerequisites: you must be using a custom provider, and your model's chat template must read
 `message.reasoning_content`. If it does not, the plugin is inert. It still
 re-injects the field, but the template ignores it, so nothing changes on the
-model's side. Most Qwen-family templates already read this field. If you are
+model's side. **Most Qwen-family templates already read this field**. If you are
 running a custom template, check that it has a `message.reasoning_content`
 accessor before expecting the plugin to do anything.
-
-No `config.yaml` changes are needed. (`preserve_thinking` and
-`passthrough_reasoning` are dead keys in the current runtime. They are not
-read by the loader. They do nothing.)
 
 ## Verify
 
 1. Run `hermes plugins show reasoning-preserve`. It should report
    `Status: enabled` and `Source: git`.
-2. Start a session against your llama.cpp backend. Send something that
-   triggers reasoning. A small math problem works. Check the llama.cpp server
-   log: the outgoing request should carry a `reasoning_content` field on the
+2. Start a new session. Instruct Hermes to invent a simple math problem, but output only the *answer*. Then, on the next turn, ask what the question was. If the plugin is working, the agent will tell you the question that it previously thought of; if it's not working, it won't be able to remember.
+   You can also check the llama.cpp server log: the outgoing request should carry a `reasoning_content` field on the
    assistant message. If it does, the plugin is working.
 
-## Managing it
-
-Every action is a one-liner. No config edits, no file surgery.
+## Managing the Plugin
 
 | Task              | Command                                        |
 | ----------------- | ---------------------------------------------- |
@@ -95,14 +127,11 @@ startup, so a new or changed plugin takes effect on the next session.
 
 ## Troubleshooting
 
-- **Install fails with an auth error.** The repo is private. Make sure
-  `GITHUB_TOKEN` in `~/.hermes/.env` has `repo` scope, or make the repo
-  public.
-- **Plugin is enabled but the model still forgets its reasoning.** Check that
+- **Plugin is enabled but the model still forgets its reasoning:** Check that "reasoning-preserve" (or the equivalent flag for your inference server of choice) is enabled, you're using a custom provider, and
   your chat template actually reads `message.reasoning_content`. If it does
   not, the plugin is doing its job but the template is dropping the field.
-- **`plugins show` says disabled.** Run `hermes plugins enable
+- **`plugins show` says disabled:** Run `hermes plugins enable
   reasoning-preserve` and restart the session.
-- **A strict OpenAI backend is rejecting requests.** This plugin never fires
+- **A strict OpenAI backend is rejecting requests:** This plugin never fires
   for strict providers. If you are seeing rejections on a strict backend, the
   cause is elsewhere.
