@@ -1,9 +1,8 @@
 # reasoning-preserve
 
 A Hermes Agent plugin that re-injects `reasoning_content` into outgoing API
-requests for `custom` OpenAI-compatible providers whose chat template reads it
-— llama.cpp running a reasoning-preserving Jinja template (the Qwen-family
-"sharp" template). Inert for every other provider.
+requests for `custom` OpenAI-compatible providers whose chat template reads it. 
+Inert for every other provider.
 
 It fixes multi-turn reasoning continuity for local models: without it, the
 model's own thinking from turn N never reaches turn N+1.
