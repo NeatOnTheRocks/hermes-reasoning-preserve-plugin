@@ -1,0 +1,7 @@
+name: reasoning-preserve
+version: 0.1.0
+description: "Re-injects reasoning_content into outgoing API requests for custom providers whose chat template reads it (llama.cpp / Qwen reasoning continuity). Inert for strict providers that reject the field."
+author: Noah
+provides_hooks:
+  - pre_api_request
+dependencies: []
